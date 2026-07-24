@@ -1,0 +1,1 @@
+console.log("DUCO Wallet website loaded");
