@@ -1,181 +1,209 @@
-#include <WiFi.h>
 #include <Wire.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
-
-#include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-
-
-// ==========================
-// WIFI
-// ==========================
-
-const char* SSID = "Linksys";
-const char* PASSWORD = "Alex1212";
-
-
-// ==========================
-// DUINO-COIN
-// ==========================
-
-String DUCO_USER = "ESP";
-String MINER_KEY = "1234";
-
-
-// ==========================
-// OLED
-// ==========================
+#include <Adafruit_GFX.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-
+#define SCREEN_ADDRESS 0x3C
 #define OLED_RESET -1
 
-#define SDA_PIN 21
-#define SCL_PIN 22
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-Adafruit_SSD1306 display(
-  SCREEN_WIDTH,
-  SCREEN_HEIGHT,
-  &Wire,
-  OLED_RESET
-);
+// WiFi
+const char *ssid = "your wifi ";
+const char *password = "your wifi pass";
 
+// Duino-Coin
+const String ducoUser = "your duco username";
+const String ducoReportJsonUrl = "https://server.duinocoin.com/v2/users/" + ducoUser + "?limit=1";
 
-// ==========================
-// MINING DATA
-// ==========================
+const int run_in_ms = 2000;
 
-float hashrate = 0;
-int shares = 0;
-int difficulty = 0;
-
-float balance = 0;
-int miners = 0;
-
-
-// ==========================
-// SETUP
-// ==========================
 
 void setup() {
-
   Serial.begin(115200);
 
-
-  Wire.begin(SDA_PIN, SCL_PIN);
-
-
-  if(!display.begin(
-      SSD1306_SWITCHCAPVCC,
-      0x3C)) {
-
-    Serial.println("OLED ERROR");
-    while(true);
-  }
+  setupWifi();
+  initDisplayOled();
+}
 
 
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
+void setupWifi() {
 
-  display.setCursor(0,0);
-  display.println("DUCO MINER");
-  display.println("ESP32-C6");
-  display.display();
+  Serial.println();
+  Serial.println("Connecting to WiFi...");
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
 
-
-  WiFi.begin(
-    SSID,
-    PASSWORD
-  );
-
-
-  display.clearDisplay();
-  display.setCursor(0,0);
-  display.println("Connecting WiFi...");
-  display.display();
-
-
-  while(WiFi.status()!=WL_CONNECTED){
-
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
 
-
   Serial.println();
-  Serial.println("WiFi OK");
-
-
-  display.clearDisplay();
-  display.setCursor(0,0);
-  display.println("WiFi Connected");
-  display.println(WiFi.localIP());
-  display.display();
-
-  delay(2000);
-
+  Serial.println("WiFi connected!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
 }
 
 
-// ==========================
-// LOOP
-// ==========================
+String httpGetString(String URL) {
+
+  String payload = "";
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+
+  if (http.begin(client, URL)) {
+
+    int httpCode = http.GET();
+
+    if (httpCode == HTTP_CODE_OK) {
+      payload = http.getString();
+    }
+    else {
+      Serial.print("HTTP Error: ");
+      Serial.println(httpCode);
+    }
+
+    http.end();
+  }
+
+  return payload;
+}
+
+
+void initDisplayOled() {
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+
+    Serial.println("OLED error!");
+    while(true);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  display.setCursor(0,0);
+  display.println("Duino-Coin Monitor");
+  display.println("Connecting...");
+  display.display();
+
+  delay(2000);
+}
+
+
+boolean runEvery(unsigned long interval) {
+
+  static unsigned long previousMillis = 0;
+
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= interval) {
+
+    previousMillis = currentMillis;
+    return true;
+  }
+
+  return false;
+}
+
+
 
 void loop() {
 
 
-  updateDisplay();
+  if (runEvery(run_in_ms)) {
 
 
-  delay(1000);
-
-}
+    String input = httpGetString(ducoReportJsonUrl);
 
 
+    DynamicJsonDocument doc(8000);
 
-// ==========================
-// OLED DISPLAY
-// ==========================
-
-void updateDisplay(){
-
-  display.clearDisplay();
-
-  display.setCursor(0,0);
-
-  display.println("DUCO MINER");
-
-  display.print("User: ");
-  display.println(DUCO_USER);
+    DeserializationError error = deserializeJson(doc, input);
 
 
-  display.print("Hash: ");
-  display.print(hashrate);
-  display.println(" kH/s");
+    if(error) {
+
+      Serial.print("JSON Error: ");
+      Serial.println(error.c_str());
+
+      return;
+    }
 
 
-  display.print("Shares: ");
-  display.println(shares);
+    JsonObject result = doc["result"];
 
 
-  display.print("Diff: ");
-  display.println(difficulty);
+    double balance = result["balance"]["balance"];
+
+    const char* username = result["balance"]["username"];
 
 
-  display.println();
+    float totalHashrate = 0;
+
+    int workers = 0;
 
 
-  display.print("Balance: ");
-  display.println(balance);
+    for(JsonObject miner : result["miners"].as<JsonArray>()) {
+
+      float hashrate = miner["hashrate"];
+
+      totalHashrate += hashrate;
+
+      workers++;
+
+    }
 
 
-  display.print("Miners: ");
-  display.println(miners);
+    Serial.println("----------------");
+    Serial.print("User: ");
+    Serial.println(username);
+
+    Serial.print("Balance: ");
+    Serial.println(balance);
+
+    Serial.print("Workers: ");
+    Serial.println(workers);
+
+    Serial.print("Hashrate: ");
+    Serial.println(totalHashrate);
 
 
-  display.display();
+
+    display.clearDisplay();
+
+    display.setCursor(0,0);
+
+    display.println("Duino-Coin");
+
+    display.println();
+
+    display.print("User: ");
+    display.println(username);
+
+    display.print("DUCO: ");
+    display.println(balance);
+
+    display.print("Workers: ");
+    display.println(workers);
+
+    display.print("Hash: ");
+    display.print(totalHashrate / 1000);
+    display.println(" Kh/s");
+
+
+    display.display();
+
+  }
 
 }
